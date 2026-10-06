@@ -1,0 +1,19 @@
+# Credentials and local settings: never commit
+*.env
+!examples/env.example
+.tma_sftp_password
+*password*
+*webhook*
+# Transfer output
+logs/
+*.log
+*_additional/
+# Python (for the planned CLI)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store

@@ -1,0 +1,6 @@
+# export_root                          remote_sample   [gcs_sample]
+# One sample per line. gcs_sample defaults to remote_sample; set it when the AtoMx name
+# differs from the folder name you want in the bucket (e.g. remote "21" -> "TMA21").
+/MyExport_19_08_2026_13_58_54_505      TMA19
+/MyExport_19_08_2026_13_58_54_505      TMA20
+/OtherExport_19_08_2026_14_06_15_216   21              TMA21
