@@ -9,8 +9,8 @@ Turn the shell scripts in `scripts/` into one tool that:
 2. Writes **status markers** in the bucket (`in_progress` → `done` / `failed`), so anything
    downstream (for example a segmentation trigger) can tell a finished transfer from one that is
    still running.
-3. Can be **run by an agent as a tool**: the agent proposes the transfer, the user confirms it,
-   and the user gives their own AtoMx login through a secure form, never in chat.
+3. Can be **run by an agent as a tool**: the agent proposes the transfer and the user confirms it.
+   The AtoMx login is entered once through a secure form (never in chat), saved, and reused.
 
 The same CLI stays usable by hand on any machine, like the scripts are today.
 
@@ -18,9 +18,9 @@ The same CLI stays usable by hand on any machine, like the scripts are today.
 
 ## 1. How the agent uses this repo
 
-**Yes: the agent uses this repo's code directly as its transfer tool, and it asks the user for
-the AtoMx login.** Two details determine *where* the code runs and *how* the password is
-collected.
+**Yes: the agent uses this repo's code directly as its transfer tool, and it asks for the AtoMx
+login the first time, then saves it.** Two details determine *where* the code runs and *how* the
+login is collected.
 
 ### 1.1 Where it runs: a transfer job, not the agent's own sandbox
 
@@ -40,32 +40,52 @@ access, and it runs for hours. So:
 
 No always-on transfer server is needed. A job is started per transfer.
 
-### 1.2 How the password is collected: a secure form, never chat
+### 1.2 Credentials: asked once through a secure form, then saved and reused
 
-The agent **can and should** ask the user for their AtoMx login. It is per person, so nothing is
-hardcoded and each transfer runs with the requester's own access. It must **not** ask for it as
-a chat message:
+The agent asks for the AtoMx login **once**. The first person to start a transfer enters it,
+the agent saves it, and every later transfer reuses it without asking again. Nothing is
+hardcoded in the code or config.
+
+**Never in chat.** The agent must not ask for the login as a chat message:
 
 - Chat messages are kept in Slack's history.
 - Agent platforms typically store the incoming message (event receipts, request records,
   conversation memory) and send its text to the language model. A password typed in chat ends up
   in all of those places.
 
-Instead:
+**Flow:**
 
-1. If no valid login is stored for this user, the agent replies with an **"Enter AtoMx login"**
-   button.
-2. The button opens a **Slack modal** (a pop-up form) with username, password, and "remember
-   for": this transfer only, 7 days, or 30 days.
-3. The form submission goes straight from Slack to the platform's interaction endpoint. That
-   handler writes it to a **secret manager** entry for this user, with an expiry matching
-   "remember for", and **nothing else**: no logs, no conversation record, no model context.
-4. The transfer job reads the secret at runtime. It never passes through environment variables
-   or job metadata, never appears in logs, and is removed when the expiry passes, or right after
-   the job for "this transfer only".
-5. A `forget atomx login` command deletes the stored secret.
+1. **No saved login yet.** On the first transfer request, the agent replies with an **"Enter
+   AtoMx login"** button. The button opens a **Slack modal** (a pop-up form) with username and
+   password.
+2. **Save.** The form submission goes straight from Slack to the platform's interaction endpoint.
+   That handler adds it as a new version of **one saved-login secret** in a secret manager
+   (scoped to the project, no expiry), and **nothing else** gets the password: no logs, no
+   conversation record, no model context.
+   - Non-secret details go in a small record next to it: username, who saved it, and when.
+   - The agent replies "AtoMx login saved by @person. Future transfers will use it."
+3. **Reuse.** Every later transfer, by anyone allowed to start one, uses the saved login without
+   asking. The confirmation preview says which login will be used ("using the AtoMx login
+   `user@…` saved by @person on 6 Oct").
+4. **Ask again only when needed:**
+   - **The login stopped working.** The transfer job reports `auth_failed` (for example after a
+     password change). The agent marks the saved login invalid and shows the "Enter AtoMx login"
+     button again. The new login replaces the old one.
+   - **Someone replaces or removes it on purpose.** `replace atomx login` opens the form;
+     `forget atomx login` disables the saved secret version. Allowed for the project owner or the
+     person who saved it.
+   - `atomx login status` shows the username, who saved it, when, and whether the last use
+     worked. It never shows the password.
+5. **Use at run time only.** The transfer job reads the secret when it starts. It never passes
+   through environment variables or job metadata and never appears in logs or progress output.
+   Only the transfer job's identity can read the secret, and only the interaction handler can
+   add versions.
 6. If someone pastes a password into chat anyway, the agent says not to and recommends changing
    that AtoMx password.
+
+Because everyone's transfers run under the saved account, every marker and notice records both
+`requested_by` (who asked) and `login_saved_by` (whose AtoMx account was used). A lab or service
+AtoMx login is preferable to a personal one, if NanoString offers it (§5).
 
 ### 1.3 Confirmation
 
@@ -158,7 +178,7 @@ Common fields:
 ```
 version: 1
 sample, remote_sample, export_root, run_folder
-requested_by (email or "manual:<host>")
+requested_by (email or "manual:<host>"), login_saved_by (whose AtoMx login was used)
 started, heartbeat, finished
 tool_version (git commit)
 ```
@@ -191,12 +211,14 @@ Consumers copy these for their own tests instead of importing this package.
     heartbeat, the `failed` marker, and that a password never appears in logs or progress
     output.
 - **M3:** a container image plus a job entrypoint (`atomx-transfer job --request request.json`)
-  that reads the credential from a secret manager at runtime.
+  that reads the saved credential from a secret manager at runtime and reports `auth_failed`
+  distinctly from other errors (so the agent knows to ask for the login again).
 - **M4:** the first real transfer of a new sample by hand with the CLI, compared against the old
   scripts. Then retire `scripts/` (keep them in git history).
 - **M5 (agent platform side, in the agent's own repo):**
   - The `start_transfer` and `transfer_status` tools.
-  - The Confirm/Cancel buttons and the "Enter AtoMx login" modal.
+  - The Confirm/Cancel buttons, the "Enter AtoMx login" modal, and `atomx login status` /
+    `replace atomx login` / `forget atomx login`.
   - The secret-manager handler, and job launching with a least-privilege identity (write only
     to the destination prefixes and `transfer_status/`).
 
@@ -206,7 +228,6 @@ Consumers copy these for their own tests instead of importing this package.
 
 1. **License for this public repo.** None yet, so it is "all rights reserved" by default.
    Options include MIT or BSD-3.
-2. **Shared login:** does AtoMx offer a lab or service export login, or should every user enter
-   their own (the current plan)?
-3. **Default "remember for" duration** for a stored login.
-4. **Who may start transfers from the agent:** project owner only, or any project member?
+2. **Which account to save:** does NanoString offer a lab or service AtoMx export login? Otherwise
+   the first person's personal login is saved and shared by everyone's transfers (§1.2).
+3. **Who may start transfers from the agent:** project owner only, or any project member?
